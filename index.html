@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Инвертор</title>
+<style>
+:root { --bg:#f4f5f7; --card:#fff; --fg:#16181d; --mut:#6b7280; --grid:#e5e7eb;
+  --ok:#16a34a; --off:#2563eb; --bad:#dc2626; --oth:#9ca3af; --c1:#2563eb; --c2:#ea580c; }
+@media (prefers-color-scheme: dark) { :root { --bg:#0f1115; --card:#191c22; --fg:#e6e8ec; --mut:#9aa1ad; --grid:#2a2e37; } }
+* { box-sizing:border-box; }
+body { margin:0 auto; padding:12px; max-width:760px; background:var(--bg); color:var(--fg); font:15px/1.35 system-ui,sans-serif; }
+.card { background:var(--card); border-radius:12px; padding:12px; margin-bottom:10px; }
+h2 { font-size:14px; margin:0 0 6px; font-weight:600; display:flex; justify-content:space-between; gap:8px; }
+h2 span { color:var(--mut); font-weight:400; text-align:right; }
+#mode { font-size:22px; font-weight:700; }
+#age, #warn { color:var(--mut); font-size:13px; }
+#warn.on { color:var(--c2); }
+.vals { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-top:10px; }
+.vals div { font-size:12px; color:var(--mut); }
+.vals b { display:block; font-size:18px; color:var(--fg); }
+.btns { display:flex; gap:6px; margin-bottom:10px; }
+.btns button { flex:1; padding:8px 0; border:0; border-radius:8px; background:var(--card); color:var(--fg); font-size:14px; }
+.btns button.on { background:var(--c1); color:#fff; }
+canvas { width:100%; height:150px; display:block; touch-action:pan-y; }
+#modes { height:34px; }
+.leg { font-size:12px; color:var(--mut); margin-top:4px; }
+.leg i { display:inline-block; width:10px; height:10px; border-radius:2px; margin:0 4px 0 10px; }
+table { width:100%; border-collapse:collapse; font-size:13px; }
+td { padding:6px 4px; border-top:1px solid var(--grid); vertical-align:top; }
+td:first-child { color:var(--mut); }
+#events td:first-child { white-space:nowrap; }
+td.r { text-align:right; white-space:nowrap; color:var(--fg); }
+details summary { cursor:pointer; font-size:14px; font-weight:600; }
+details[open] summary { margin-bottom:6px; }
+.status details { margin-top:10px; }
+.status details summary { font-weight:400; color:var(--mut); font-size:13px; }
+.row { padding:8px 0; border-top:1px solid var(--grid); font-size:13px; color:var(--mut); }
+.row:first-of-type { border-top:0; }
+.row b { color:var(--fg); font-weight:600; }
+.row .hd { display:flex; justify-content:space-between; font-size:14px; margin-bottom:2px; }
+.bad { color:var(--bad); }
+a { color:var(--c1); }
+</style>
+</head>
+<body>
+<div class="card status">
+  <div id="mode">…</div>
+  <div id="age"></div>
+  <div id="warn"></div>
+  <div class="vals" id="vals"></div>
+  <details><summary>Все показатели</summary><table id="all"></table></details>
+</div>
+<div class="btns" id="btns"></div>
+<div class="card"><h2>Режим</h2><canvas id="modes"></canvas>
+  <div class="leg"><i style="background:var(--ok);margin-left:0"></i>Сеть<i style="background:var(--off)"></i>АКБ<i style="background:var(--bad)"></i>Авария<i style="background:var(--oth)"></i>Прочее / нет данных</div></div>
+<div class="card"><h2>Напряжение сети, В <span id="v_grid"></span></h2><canvas id="c_grid"></canvas></div>
+<div class="card"><h2>Мощность заряда от сети, Вт <span id="v_chg"></span></h2><canvas id="c_chg"></canvas></div>
+<div class="card"><h2>Ток АКБ, А <span id="v_cur"></span></h2><canvas id="c_cur"></canvas>
+  <div class="leg">Плюс — заряд, минус — разряд</div></div>
+<div class="card"><h2>Напряжение АКБ, В <span id="v_bat"></span></h2><canvas id="c_bat"></canvas></div>
+<div class="card"><h2>Температура, °C <span id="v_tmp"></span></h2><canvas id="c_tmp"></canvas>
+  <div class="leg"><i style="background:var(--c1);margin-left:0"></i>DC-модуль<i style="background:var(--c2)"></i>Инвертор</div></div>
+<div class="card"><h2>Мощность, Вт <span id="v_pow"></span></h2><canvas id="c_pow"></canvas>
+  <div class="leg"><i style="background:var(--c1);margin-left:0"></i>Из сети<i style="background:var(--c2)"></i>Нагрузка</div></div>
+<div class="card"><h2>Сводка по дням</h2><div id="days"></div></div>
+<div class="card"><h2>Циклы заряда АКБ</h2><div id="cycles"></div></div>
+<div class="card"><details><summary>Настройки инвертора <span id="set_ts" class="leg"></span></summary><table id="settings"></table></details></div>
+<div class="card"><h2>Журнал событий</h2><table id="events"></table>
+  <p class="leg"><a id="csv" href="#">Скачать лог (CSV) для мастера</a></p></div>
+<script>
+const RANGES = [[6,'6 ч',1],[24,'24 ч',2],[168,'7 дн',7],[720,'30 дн',30]];
+const MODES = {0:'Включение',1:'Ожидание',2:'От сети',3:'От АКБ',4:'Байпас',5:'Заряд',6:'АВАРИЯ'};
+let hours = 24, D = null;
+const $ = id => document.getElementById(id);
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const num = (v, d = 1) => v == null ? '—' : Number(v).toFixed(d).replace('.', ',');
+const dur = s => s < 60 ? 'меньше минуты' : s < 3600 ? Math.round(s / 60) + ' мин' :
+  Math.floor(s / 3600) + ' ч ' + String(Math.round(s % 3600 / 60)).padStart(2, '0') + ' мин';
+const modeColor = m => m == null ? css('--oth') : m === 6 ? css('--bad') : m === 3 ? css('--off') : (m === 2 || m === 5) ? css('--ok') : css('--oth');
+const fmtT = (ts, long) => new Date(ts * 1000).toLocaleString('ru', long
+  ? {day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit'}
+  : hours > 48 ? {day:'2-digit', month:'2-digit'} : {hour:'2-digit', minute:'2-digit'});
+const hm = ts => new Date(ts * 1000).toLocaleString('ru', {day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit'});
+
+function prep(cv) {
+  const r = devicePixelRatio || 1, w = cv.clientWidth, h = cv.clientHeight;
+  cv.width = w * r; cv.height = h * r;
+  const g = cv.getContext('2d'); g.scale(r, r); g.clearRect(0, 0, w, h);
+  return [g, w, h];
+}
+function xOf(t, w, L) { return L + (t - D.from) / (D.to - D.from) * (w - L - 4); }
+
+function drawModes() {
+  const [g, w, h] = prep($('modes')), t = D.t, m = D.mode;
+  g.fillStyle = css('--oth'); g.globalAlpha = .25; g.fillRect(0, 0, w, h); g.globalAlpha = 1;
+  for (let i = 0; i < t.length; i++) {
+    const x0 = xOf(t[i], w, 0), end = i + 1 < t.length ? Math.min(t[i + 1], t[i] + D.gap) : Math.min(D.to, t[i] + D.gap);
+    g.fillStyle = modeColor(m[i]); g.fillRect(x0, 0, Math.max(1, xOf(end, w, 0) - x0), h);
+  }
+}
+
+function drawLine(id, keys, colors, cursor) {
+  const [g, w, h] = prep($(id)), L = 38, B = 18, t = D.t;
+  let lo = Infinity, hi = -Infinity;
+  for (const k of keys) for (const v of D[k]) if (v != null) { lo = Math.min(lo, v); hi = Math.max(hi, v); }
+  if (lo === Infinity) { lo = 0; hi = 1; }
+  if (hi - lo < 1) { hi += .5; lo -= .5; }
+  const pad = (hi - lo) * .08; lo = lo >= 0 ? Math.max(0, lo - pad) : lo - pad; hi += pad;
+  const y = v => (h - B) - (v - lo) / (hi - lo) * (h - B - 6);
+  g.font = '11px system-ui'; g.fillStyle = css('--mut'); g.strokeStyle = css('--grid'); g.lineWidth = 1;
+  for (let i = 0; i <= 3; i++) {
+    const v = lo + (hi - lo) * i / 3, yy = y(v);
+    g.beginPath(); g.moveTo(L, yy); g.lineTo(w, yy); g.stroke();
+    g.fillText(Math.abs(v) >= 100 ? v.toFixed(0) : v.toFixed(1), 2, yy + 4);
+  }
+  if (lo < 0 && hi > 0) {                 // нулевая линия: выше - заряд, ниже - разряд
+    g.strokeStyle = css('--mut'); g.beginPath(); g.moveTo(L, y(0)); g.lineTo(w, y(0)); g.stroke();
+  }
+  for (let i = 0; i <= 4; i++) {
+    const ts = D.from + (D.to - D.from) * i / 4, s = fmtT(ts);
+    g.fillText(s, Math.min(w - g.measureText(s).width, Math.max(L, xOf(ts, w, L) - 14)), h - 4);
+  }
+  keys.forEach((k, n) => {
+    g.strokeStyle = g.fillStyle = colors[n]; g.lineWidth = 1.6; g.beginPath();
+    let pen = false, prev = 0;
+    for (let i = 0; i < t.length; i++) {
+      const v = D[k][i];
+      if (v == null) { pen = false; continue; }
+      const X = xOf(t[i], w, L), Y = y(v);
+      if (pen && t[i] - prev <= D.gap) g.lineTo(X, Y); else { g.moveTo(X, Y); g.fillRect(X - 1, Y - 1, 2, 2); }
+      pen = true; prev = t[i];
+    }
+    g.stroke();
+  });
+  if (cursor != null) {
+    const X = xOf(t[cursor], w, L);
+    g.strokeStyle = css('--mut'); g.lineWidth = 1; g.beginPath(); g.moveTo(X, 0); g.lineTo(X, h - B); g.stroke();
+  }
+}
+
+const CHARTS = [['c_grid', ['grid_v'], 'v_grid'], ['c_chg', ['chg_w'], 'v_chg'], ['c_cur', ['bat_a'], 'v_cur'],
+                ['c_bat', ['bat_v'], 'v_bat'], ['c_tmp', ['t_dc', 't_inv'], 'v_tmp'], ['c_pow', ['grid_w', 'out_w'], 'v_pow']];
+function drawAll(cursor) {
+  if (!D) return;
+  drawModes();
+  for (const [id, keys, lab] of CHARTS) {
+    drawLine(id, keys, [css('--c1'), css('--c2')], cursor);
+    $(lab).textContent = cursor == null ? '' : fmtT(D.t[cursor], true) + ' · ' + keys.map(k => num(D[k][cursor])).join(' / ');
+  }
+}
+function nearest(cv, ev) {
+  if (!D || !D.t.length) return null;
+  const r = cv.getBoundingClientRect(), L = 38, x = (ev.touches ? ev.touches[0].clientX : ev.clientX) - r.left;
+  const ts = D.from + (x - L) / (r.width - L - 4) * (D.to - D.from);
+  let best = 0;
+  for (let i = 1; i < D.t.length; i++) if (Math.abs(D.t[i] - ts) < Math.abs(D.t[best] - ts)) best = i;
+  return best;
+}
+for (const [id] of CHARTS) {
+  const cv = $(id);
+  for (const e of ['mousemove', 'touchstart', 'touchmove']) cv.addEventListener(e, ev => drawAll(nearest(cv, ev)), {passive: true});
+  cv.addEventListener('mouseleave', () => drawAll(null));
+}
+
+function render() {
+  const s = D.last, age = s ? D.now - s.ts : null, el = $('mode');
+  if (!s) { el.textContent = 'Данных ещё нет'; el.style.color = css('--mut'); }
+  else {
+    const stale = age > D.stale;
+    el.textContent = stale ? 'НЕТ СВЯЗИ' : (MODES[s.mode] ?? 'Режим ' + s.mode) + (s.fault ? ' · ошибка ' + s.fault_text : '');
+    el.style.color = stale ? css('--bad') : modeColor(s.mode);
+    $('age').textContent = 'Обновлено ' + fmtT(s.ts, true) + ' (' +
+      (age < 90 ? age + ' с' : age < 5400 ? Math.round(age / 60) + ' мин' : Math.round(age / 3600) + ' ч') + ' назад)' +
+      (D.link ? '' : ' · модуль не подключён');
+    $('warn').textContent = s.warn_main.length ? 'Предупреждения: ' + s.warn_main.join(', ') : '';
+    $('warn').className = s.warn_main.length ? 'on' : '';
+    const V = [['Сеть', num(s.grid_v, 0), 'В'], ['Из сети', num(s.grid_w, 0), 'Вт'], ['Выход', num(s.out_v, 0), 'В'],
+               ['Заряд от сети', num(s.chg_w, 0), 'Вт'], ['Ток АКБ', (s.bat_a > 0 ? '+' : '') + num(s.bat_a), 'А'], ['АКБ', num(s.bat_v), 'В'],
+               ['Нагрузка', num(s.out_w, 0), 'Вт'], ['Загрузка', num(s.load, 0), '%'], ['Темп. DC / INV', num(s.t_dc, 0) + ' / ' + num(s.t_inv, 0), '°C']];
+    $('vals').innerHTML = V.map(([n, v, u]) => `<div><b>${v} ${u}</b>${n}</div>`).join('');
+    $('all').innerHTML = D.fields.map(([k, title, unit]) =>
+      `<tr><td>${esc(title)}</td><td class="r">${s[k] == null ? '—' : String(s[k]).replace('.', ',')} ${esc(unit)}</td></tr>`).join('') +
+      `<tr><td>Все предупреждения инвертора</td><td class="r" style="white-space:normal">${esc(s.warn_all.join(', ') || 'нет')}</td></tr>`;
+  }
+  $('settings').innerHTML = D.settings.length
+    ? D.settings.map(([n, v]) => `<tr><td>${esc(n)}</td><td class="r" style="white-space:normal">${esc(v)}</td></tr>`).join('')
+    : '<tr><td>Настройки ещё не прочитаны</td></tr>';
+  $('set_ts').textContent = D.settings_ts ? '· прочитаны ' + hm(D.settings_ts) : '';
+  const tb = $('events');
+  tb.innerHTML = D.events.length ? '' : '<tr><td>Событий нет</td></tr>';
+  for (const e of D.events) {
+    const tr = tb.insertRow();
+    tr.insertCell().textContent = fmtT(e.ts, true);
+    tr.insertCell().textContent = e.text;
+  }
+  drawAll(null);
+}
+
+function renderStats(S) {
+  const today = new Date().toDateString();
+  const days = S.days.filter(d => d.data_s > 0);
+  $('days').innerHTML = days.length ? days.map(d => {
+    const date = new Date(d.date * 1000), name = date.toLocaleDateString('ru', {day:'2-digit', month:'2-digit', weekday:'short'});
+    return `<div class="row"><div class="hd"><b>${name}${date.toDateString() === today ? ', сегодня' : ''}</b><span>данные за ${num(d.data_s / 3600)} ч</span></div>
+      Из сети <b>${num(d.grid_wh / 1000, 2)}</b> кВт·ч · нагрузка <b>${num(d.load_wh / 1000, 2)}</b> · на заряд <b>${num(d.chg_wh / 1000, 2)}</b><br>
+      В АКБ <b>${num(d.chg_ah)}</b> А·ч · из АКБ <b>${num(d.dis_ah)}</b> А·ч · АКБ <b>${num(d.bat_v_min)}–${num(d.bat_v_max)}</b> В<br>
+      ${d.outages ? `Сеть пропадала: <b>${d.outages} ${d.outages % 10 >= 2 && d.outages % 10 <= 4 && (d.outages % 100 < 12 || d.outages % 100 > 14) ? 'раза' : 'раз'}</b>, всего <b>${dur(d.off_s)}</b>` : 'Сеть не пропадала'}
+      · от АКБ <b>${d.bat_s ? dur(d.bat_s) : '0'}</b>
+      · в аварии <b class="${d.fault_s ? 'bad' : ''}">${d.fault_s ? dur(d.fault_s) : '0'}</b></div>`;
+  }).join('') : '<div class="row">Данных за этот период нет</div>';
+  $('cycles').innerHTML = S.cycles.length ? S.cycles.map(c =>
+    `<div class="row"><div class="hd"><b>${hm(c.start)} — ${dur(c.end - c.start)}</b><span class="${c.why.startsWith('прерван') ? 'bad' : ''}">${esc(c.why)}</span></div>
+      В АКБ <b>${num(c.ah)}</b> А·ч · из сети <b>${num(c.wh / 1000, 2)}</b> кВт·ч · до <b>${num(c.peak_a)}</b> А · АКБ <b>${num(c.v0)} → ${num(c.v1)}</b> В</div>`).join('')
+    : '<div class="row">За этот период заряда не было</div>';
+}
+
+async function load() {
+  try {
+    const r = await fetch('api/data?hours=' + hours, {cache: 'no-store'});
+    D = await r.json(); render();
+  } catch (e) { $('age').textContent = 'Сервис не отвечает'; }
+}
+async function loadStats() {
+  try {
+    const days = RANGES.find(r => r[0] === hours)[2];
+    renderStats(await (await fetch('api/stats?days=' + days, {cache: 'no-store'})).json());
+  } catch (e) {}
+}
+const btns = $('btns');
+for (const [h, name] of RANGES) {
+  const b = document.createElement('button'); b.textContent = name; b.className = h === hours ? 'on' : '';
+  b.onclick = () => { hours = h; [...btns.children].forEach(x => x.className = x === b ? 'on' : ''); csvLink(); load(); loadStats(); };
+  btns.appendChild(b);
+}
+function csvLink() { $('csv').href = 'api/csv?hours=' + hours; }
+csvLink(); load(); loadStats(); setInterval(load, 10000); setInterval(loadStats, 120000);
+addEventListener('resize', () => drawAll(null));
+</script>
+</body>
+</html>

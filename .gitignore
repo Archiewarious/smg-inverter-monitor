@@ -1,0 +1,13 @@
+# Белый список: в репозиторий попадает только то, что перечислено ниже.
+# Всё остальное (config.json с токеном, база, журналы, состояние виджета, ярлыки) остаётся локально.
+*
+!.gitignore
+!LICENSE
+!README.md
+!config.example.json
+!monitor.py
+!eybond.py
+!redirect.py
+!index.html
+!widget.pyw
+!PowerMode.ahk
