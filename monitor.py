@@ -295,7 +295,8 @@ class Battery:
         self.used = saved.get("used")         # А·ч, израсходовано от полного заряда; None - ещё не знаем
         self.rough = saved.get("rough", True)
         self.ts = saved.get("ts", 0)
-        self.full_s = 0                       # сколько секунд подряд АКБ выглядит полной
+        self.grid = saved.get("grid")         # была ли сеть в последнем измерении (для перерывов в данных)
+        self.full_s = 0                      # сколько секунд подряд АКБ выглядит полной
         self.amps = 0.0                       # сглаженный ток разряда, А
         self.limits_ts = 0
 
@@ -312,13 +313,22 @@ class Battery:
             self.limits_ts = ts
             self.read_limits()
         dt, self.ts = ts - self.ts, ts
-        if dt > 300:                          # перерыв в данных: что было с АКБ, неизвестно
-            self.rough = True
-        if not 0 < dt <= 300:
-            dt = 0
         amps, volts = s["bat_a"], s["bat_v"]
         empty = soc_by_volts(self.cutoff_v)   # на отсечке в АКБ ещё что-то есть, но нам оно недоступно
         share = max(0.0, (soc_by_volts(volts - (0.3 if amps > 5 else 0)) - empty) / (1 - empty))
+        if dt > 300:                          # перерыв в данных (ПК был выключен или спал)
+            if self.grid and dt >= 3600:
+                # перед перерывом сеть была: инвертор держал АКБ на подзарядке, считаем её полной.
+                # Если свет пропал во время перерыва - считаем, что только что (ПК включают сразу).
+                self.used, self.rough = 0.0, False
+            elif not self.grid:
+                self.rough = True             # перерыв посреди отключения: что было с АКБ, неизвестно
+        if not 0 < dt <= 300:
+            dt = 0
+        self.grid = s["grid_v"] > 160
+        # страховка: счёт говорит «больше половины», а напряжение под нагрузкой - «почти пусто»
+        if not self.rough and amps < -1 and share < 0.15 and BAT_AH - self.used > BAT_AH * 0.5:
+            self.used, self.rough = BAT_AH * (1 - share), True
         if self.used is None:
             self.used = BAT_AH * (1 - share)
         elif self.rough and amps <= 1:        # не заряжается: напряжению можно верить, подтягиваемся к нему
@@ -340,7 +350,7 @@ class Battery:
 
     def save(self, con):
         con.execute("INSERT OR REPLACE INTO state (key, value) VALUES ('battery', ?)",
-                    (json.dumps({"used": self.used, "rough": self.rough, "ts": self.ts}),))
+                    (json.dumps({"used": self.used, "rough": self.rough, "ts": self.ts, "grid": self.grid}),))
 
 
 # ---------- опрос ----------
